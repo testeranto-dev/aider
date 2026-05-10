@@ -118,6 +118,10 @@ def select_default_model(args, io, analytics):
     Selects a default model based on available API keys if no model is specified.
     Offers OAuth flow for OpenRouter if no keys are found.
 
+    If the environment variable AIDER_DISABLE_ONBOARDING is set (e.g. when
+    running inside a Testeranto container), the function returns a hard‑coded
+    default model without checking for API keys.
+
     Args:
         args: The command line arguments object.
         io: The InputOutput object for user interaction.
@@ -129,13 +133,24 @@ def select_default_model(args, io, analytics):
     if args.model:
         return args.model  # Model already specified
 
+    # When running inside a Testeranto container we skip the API‑key check
+    # and return a free OpenRouter model.  The actual API keys are passed
+    # as environment variables by the host.
+    if os.environ.get("AIDER_DISABLE_ONBOARDING"):
+        default_model = "openrouter/deepseek/deepseek-r1:free"
+        io.tool_warning(
+            f"Using {default_model} model (AIDER_DISABLE_ONBOARDING is set)."
+        )
+        analytics.event("auto_model_selection", model=default_model)
+        return default_model
+
     model = try_to_select_default_model()
     if model:
         io.tool_warning(f"Using {model} model with API key from environment.")
         analytics.event("auto_model_selection", model=model)
         return model
 
-    no_model_msg = "No LLM model was specified and no API keys were provided."
+    no_model_msg = "No LLM model was specified and no API keys were provided!"
     io.tool_warning(no_model_msg)
 
     # Try OAuth if no model was detected

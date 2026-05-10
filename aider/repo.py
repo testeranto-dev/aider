@@ -1,7 +1,9 @@
 import contextlib
+import json
 import os
 import time
 from pathlib import Path, PurePosixPath
+from typing import Any, Dict, Optional
 
 try:
     import git
@@ -91,6 +93,9 @@ class GitRepo:
         self.git_commit_verify = git_commit_verify
         self.ignore_file_cache = {}
 
+        # GraphQL client for virtual file operations
+        self._graphql_client = None
+
         if git_dname:
             check_fnames = [git_dname]
         elif fnames:
@@ -127,6 +132,92 @@ class GitRepo:
 
         if aider_ignore_file:
             self.aider_ignore_file = Path(aider_ignore_file)
+
+    @property
+    def graphql_client(self):
+        """Lazy-initialized GraphQL client for virtual file operations."""
+        if self._graphql_client is None:
+            try:
+                from aider.graphql_client import GraphQLClient
+                self._graphql_client = GraphQLClient()
+            except ImportError:
+                self._graphql_client = None
+        return self._graphql_client
+
+    def create_virtual_file(
+        self,
+        name: str,
+        content: str,
+        source: str = "api",
+        ttl: Optional[int] = None,
+        created_by: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Store API results or other data as a virtual file in the graph.
+
+        This replaces permanent message history with droppable, TTL-aware,
+        queryable context.
+
+        Args:
+            name: Virtual file name (e.g., "search:auth", "graph:references")
+            content: The content to store
+            source: Source type ("api", "graph", "search", "database", "tree-sitter")
+            ttl: Time-to-live in seconds (None = permanent)
+            created_by: Agent name that created the file
+
+        Returns:
+            Virtual file metadata dict, or None if GraphQL is unavailable.
+        """
+        client = self.graphql_client
+        if client is None:
+            return None
+
+        try:
+            result = client.create_virtual_file(
+                name=name,
+                content=content,
+                source=source,
+                ttl=ttl,
+                created_by=created_by or "aider",
+            )
+            return result
+        except Exception as e:
+            self.io.tool_warning(f"Failed to create virtual file '{name}': {e}")
+            return None
+
+    def drop_virtual_file(self, name: str) -> bool:
+        """Drop a virtual file from the graph."""
+        client = self.graphql_client
+        if client is None:
+            return False
+        try:
+            return client.drop_virtual_file(name)
+        except Exception as e:
+            self.io.tool_warning(f"Failed to drop virtual file '{name}': {e}")
+            return False
+
+    def set_virtual_file_context(self, name: str, in_context: bool) -> bool:
+        """Set whether a virtual file is included in aider's context."""
+        client = self.graphql_client
+        if client is None:
+            return False
+        try:
+            result = client.set_virtual_file_context(name, in_context)
+            return bool(result)
+        except Exception as e:
+            self.io.tool_warning(f"Failed to set virtual file context '{name}': {e}")
+            return False
+
+    def get_virtual_files_in_context(self) -> list:
+        """Get all virtual files currently marked as in-context."""
+        client = self.graphql_client
+        if client is None:
+            return []
+        try:
+            return client.get_virtual_files(in_context=True)
+        except Exception as e:
+            self.io.tool_warning(f"Failed to get virtual files in context: {e}")
+            return []
 
     def commit(self, fnames=None, context=None, message=None, aider_edits=False, coder=None):
         """
@@ -316,6 +407,27 @@ class GitRepo:
         except ANY_GIT_ERROR as err:
             self.io.tool_error(f"Unable to commit: {err}")
             # No return here, implicitly returns None
+
+    def get_hybrid_context(self, repo_map: Optional[str] = None) -> str:
+        """
+        Build hybrid context by merging tree‑sitter repo map with GraphQL context.
+
+        Args:
+            repo_map: Optional pre-computed tree‑sitter repo map string.
+
+        Returns:
+            Formatted context string.
+        """
+        try:
+            from aider.hybrid_context_formatter import HybridContextFormatter
+            formatter = HybridContextFormatter(
+                graphql_client=self.graphql_client,
+                agent_name="aider",
+            )
+            return formatter.format_context(repo_map=repo_map)
+        except ImportError:
+            # Fall back to just the repo map if hybrid formatter is not available
+            return repo_map or ""
 
     def get_rel_repo_dir(self):
         try:
