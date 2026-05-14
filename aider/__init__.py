@@ -18,3 +18,4 @@ else:
         __version__ = safe_version + "+parse"
 
 __all__ = [__version__]
+# aider package
